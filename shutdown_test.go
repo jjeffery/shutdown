@@ -88,3 +88,15 @@ func TestContext(t *testing.T) {
 		t.Errorf("Context not closed after shutdown requested")
 	}
 }
+
+func TestTerminate(t *testing.T) {
+	TestingReset()
+	var terminated bool
+	Terminate = func() { terminated = true }
+	Timeout = time.Millisecond * 50
+	RequestShutdown()
+	time.Sleep(Timeout * 2)
+	if got, want := terminated, true; got != want {
+		t.Errorf("want %v, got %v", want, got)
+	}
+}

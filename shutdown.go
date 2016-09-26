@@ -1,4 +1,4 @@
-// Package shutdown coordinates graceful shutdown for a process.
+// Package shutdown coordinates an orderly shutdown for a process.
 package shutdown
 
 import (
@@ -7,8 +7,6 @@ import (
 	"os/signal"
 	"sync"
 	"time"
-
-	"github.com/jjeffery/structlog"
 )
 
 // Timeout is the maximum amount of time that the program shutdown
@@ -17,48 +15,50 @@ import (
 var Timeout = 5 * time.Second
 
 // Signals are the OS signals that will be interpreted as a request
-// to gracefully shutdown the process. Default values depend on the
-// operating system.
+// to shutdown the process. Default values depend on the operating system.
 //
 // To override the defaults, set this variable before calling any
 // functions in this package. To disable signal handling, set to nil.
 var Signals []os.Signal
 
-// Logger is used to log messages.
-var Logger = structlog.DefaultLogger
+// Terminate is called when the program should be terminated. The default
+// value calls os.Exit(1), but the calling program can override this to
+// perform additional processing before terminating.
+var Terminate = func() { os.Exit(1) }
 
-var (
+var global struct {
 	mutex             sync.Mutex
 	shutdownFuncs     []func()
 	shutdownRequested bool
 	shutdownC         <-chan struct{}
-	catchSignals      func()
+	testingResetC     chan struct{}
 	shutdownCtx       context.Context
-)
+	catchSignals      func()
+}
 
 func init() {
-	initShutdownC()
+	initContext()
 	initCatchSignals()
 }
 
-func initShutdownC() {
+func initContext() {
 	ctx, cancel := context.WithCancel(context.Background())
-	shutdownC = ctx.Done()
-	shutdownCtx = ctx
-	shutdownFuncs = append(shutdownFuncs, cancel)
+	global.shutdownC = ctx.Done()
+	global.shutdownCtx = ctx
+	global.shutdownFuncs = append(global.shutdownFuncs, cancel)
+	global.testingResetC = make(chan struct{})
 }
 
 func initCatchSignals() {
 	var once sync.Once
-	catchSignals = func() {
+	global.catchSignals = func() {
 		once.Do(func() {
 			if len(Signals) > 0 {
 				ch := make(chan os.Signal)
 				signal.Notify(ch, Signals...)
 
 				go func() {
-					for sig := range ch {
-						Logger.Log("msg", "signal caught", "signal", sig.String())
+					for _ = range ch {
 						RequestShutdown()
 						return
 					}
@@ -71,8 +71,8 @@ func initCatchSignals() {
 // InProgress returns a channel that is closed when a graceful shutdown
 // is requested.
 func InProgress() <-chan struct{} {
-	catchSignals()
-	return shutdownC
+	global.catchSignals()
+	return global.shutdownC
 }
 
 // Requested returns true if shutdown has been requested.
@@ -88,8 +88,8 @@ func Requested() bool {
 // Context returns a background context that is canceled when a
 // graceful shutdown is requested.
 func Context() context.Context {
-	catchSignals()
-	return shutdownCtx
+	global.catchSignals()
+	return global.shutdownCtx
 }
 
 // RegisterCallback appends function f to the list of functions that will be
@@ -99,20 +99,21 @@ func RegisterCallback(f func()) {
 	if f == nil {
 		return
 	}
-	catchSignals()
-	mutex.Lock()
-	shutdownFuncs = append(shutdownFuncs, f)
-	mutex.Unlock()
+	global.catchSignals()
+	global.mutex.Lock()
+	global.shutdownFuncs = append(global.shutdownFuncs, f)
+	global.mutex.Unlock()
 }
 
 // TestingReset clears all shutdown functions. Should
 // only be used during testing.
 func TestingReset() {
-	mutex.Lock()
-	shutdownFuncs = nil
-	shutdownRequested = false
-	initShutdownC()
-	mutex.Unlock()
+	close(global.testingResetC)
+	global.mutex.Lock()
+	global.shutdownFuncs = nil
+	global.shutdownRequested = false
+	initContext()
+	global.mutex.Unlock()
 }
 
 // RequestShutdown will initiate a graceful shutdown. The InProgress
@@ -127,26 +128,30 @@ func RequestShutdown() {
 	var funcs []func()
 	var alreadyRequested bool
 
-	mutex.Lock()
-	funcs = shutdownFuncs
-	shutdownFuncs = nil
-	alreadyRequested = shutdownRequested
-	shutdownRequested = true
-	mutex.Unlock()
+	global.mutex.Lock()
+	funcs = global.shutdownFuncs
+	global.shutdownFuncs = nil
+	alreadyRequested = global.shutdownRequested
+	global.shutdownRequested = true
+	global.mutex.Unlock()
 
 	if alreadyRequested {
-		Logger.Log("msg", "shutdown already requested", "level", "warn")
 		return
 	}
 
-	Logger.Log("msg", "shutdown requested")
 	for _, f := range funcs {
 		f()
 	}
 
-	go func() {
-		time.Sleep(Timeout)
-		Logger.Log("msg", "process terminated", "level", "fatal")
-		os.Exit(1)
-	}()
+	go func(resetC <-chan struct{}) {
+		select {
+		case <-time.After(Timeout):
+			Terminate()
+		case <-resetC:
+			// this option is just for testing,
+			// the goroutine will be terminated if TestingReset
+			// is called.
+			break
+		}
+	}(global.testingResetC)
 }
