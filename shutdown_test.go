@@ -7,7 +7,7 @@ import (
 )
 
 func TestRequested(t *testing.T) {
-	TestingReset()
+	defer TestingReset()
 	if got, want := Requested(), false; got != want {
 		t.Fatalf("want %v, got %v", want, got)
 	}
@@ -18,7 +18,7 @@ func TestRequested(t *testing.T) {
 }
 
 func TestRegisterCallback(t *testing.T) {
-	TestingReset()
+	defer TestingReset()
 	var count struct {
 		last      int64
 		callback1 int64
@@ -50,7 +50,7 @@ func TestRegisterCallback(t *testing.T) {
 }
 
 func TestInProgress(t *testing.T) {
-	TestingReset()
+	defer TestingReset()
 
 	select {
 	case <-InProgress():
@@ -70,7 +70,7 @@ func TestInProgress(t *testing.T) {
 }
 
 func TestContext(t *testing.T) {
-	TestingReset()
+	defer TestingReset()
 
 	select {
 	case <-Context().Done():
@@ -90,7 +90,7 @@ func TestContext(t *testing.T) {
 }
 
 func TestTerminate(t *testing.T) {
-	TestingReset()
+	defer TestingReset()
 	var terminated bool
 	Terminate = func() { terminated = true }
 	Timeout = time.Millisecond * 50

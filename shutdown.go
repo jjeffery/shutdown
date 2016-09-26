@@ -2,7 +2,6 @@
 package shutdown
 
 import (
-	"context"
 	"os"
 	"os/signal"
 	"sync"
@@ -26,53 +25,55 @@ var Signals []os.Signal
 // perform additional processing before terminating.
 var Terminate = func() { os.Exit(1) }
 
-var global struct {
+var (
 	mutex             sync.Mutex
+	once              sync.Once
 	shutdownFuncs     []func()
 	shutdownRequested bool
-	shutdownC         <-chan struct{}
 	testingResetC     chan struct{}
-	shutdownCtx       context.Context
-	catchSignals      func()
-}
+	shutdownC         <-chan struct{}
+)
 
 func init() {
+	initGlobals()
+}
+
+// initGlobals is called during initialization, and also from
+// TestingReset.
+func initGlobals() {
+	shutdownFuncs = nil
+	shutdownRequested = false
+	testingResetC = make(chan struct{})
+	// initContext is different for < go1.7 and >=go1.7
 	initContext()
-	initCatchSignals()
+	shutdownC = shutdownCtx.Done()
 }
 
-func initContext() {
-	ctx, cancel := context.WithCancel(context.Background())
-	global.shutdownC = ctx.Done()
-	global.shutdownCtx = ctx
-	global.shutdownFuncs = append(global.shutdownFuncs, cancel)
-	global.testingResetC = make(chan struct{})
-}
+// catchSignals initiates catching termination signals.
+// It initializes once only, when one of the other public functions
+// is called. This way the calling program can initialize the Signals
+// variable before calling any functions in this package.
+func catchSignals() {
+	once.Do(func() {
+		if len(Signals) > 0 {
+			ch := make(chan os.Signal)
+			signal.Notify(ch, Signals...)
 
-func initCatchSignals() {
-	var once sync.Once
-	global.catchSignals = func() {
-		once.Do(func() {
-			if len(Signals) > 0 {
-				ch := make(chan os.Signal)
-				signal.Notify(ch, Signals...)
-
-				go func() {
-					for _ = range ch {
-						RequestShutdown()
-						return
-					}
-				}()
-			}
-		})
-	}
+			go func() {
+				for _ = range ch {
+					RequestShutdown()
+					return
+				}
+			}()
+		}
+	})
 }
 
 // InProgress returns a channel that is closed when a graceful shutdown
 // is requested.
 func InProgress() <-chan struct{} {
-	global.catchSignals()
-	return global.shutdownC
+	catchSignals()
+	return shutdownC
 }
 
 // Requested returns true if shutdown has been requested.
@@ -85,35 +86,26 @@ func Requested() bool {
 	}
 }
 
-// Context returns a background context that is canceled when a
-// graceful shutdown is requested.
-func Context() context.Context {
-	global.catchSignals()
-	return global.shutdownCtx
-}
-
 // RegisterCallback appends function f to the list of functions that will be
 // called when a shutdown is requested. Function f must be safe to call from
 // any goroutine.
 func RegisterCallback(f func()) {
+	catchSignals()
 	if f == nil {
 		return
 	}
-	global.catchSignals()
-	global.mutex.Lock()
-	global.shutdownFuncs = append(global.shutdownFuncs, f)
-	global.mutex.Unlock()
+	mutex.Lock()
+	shutdownFuncs = append(shutdownFuncs, f)
+	mutex.Unlock()
 }
 
 // TestingReset clears all shutdown functions. Should
 // only be used during testing.
 func TestingReset() {
-	close(global.testingResetC)
-	global.mutex.Lock()
-	global.shutdownFuncs = nil
-	global.shutdownRequested = false
-	initContext()
-	global.mutex.Unlock()
+	close(testingResetC)
+	mutex.Lock()
+	initGlobals()
+	mutex.Unlock()
 }
 
 // RequestShutdown will initiate a graceful shutdown. The InProgress
@@ -128,30 +120,28 @@ func RequestShutdown() {
 	var funcs []func()
 	var alreadyRequested bool
 
-	global.mutex.Lock()
-	funcs = global.shutdownFuncs
-	global.shutdownFuncs = nil
-	alreadyRequested = global.shutdownRequested
-	global.shutdownRequested = true
-	global.mutex.Unlock()
+	mutex.Lock()
+	funcs = shutdownFuncs
+	shutdownFuncs = nil
+	alreadyRequested = shutdownRequested
+	shutdownRequested = true
+	mutex.Unlock()
 
 	if alreadyRequested {
 		return
 	}
 
-	for _, f := range funcs {
-		f()
-	}
-
-	go func(resetC <-chan struct{}) {
+	go func(testingResetC <-chan struct{}) {
 		select {
 		case <-time.After(Timeout):
 			Terminate()
-		case <-resetC:
-			// this option is just for testing,
-			// the goroutine will be terminated if TestingReset
-			// is called.
+		case <-testingResetC:
+			// indicates TestingReset has been called
 			break
 		}
-	}(global.testingResetC)
+	}(testingResetC)
+
+	for _, f := range funcs {
+		f()
+	}
 }
