@@ -22,7 +22,8 @@ var Signals []os.Signal
 
 // Terminate is called when the program should be terminated. The default
 // value calls os.Exit(1), but the calling program can override this to
-// perform additional processing before terminating.
+// perform additional processing before terminating. Terminate should be
+// callable from any goroutine.
 var Terminate = func() { os.Exit(1) }
 
 var (
