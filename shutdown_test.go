@@ -20,20 +20,19 @@ func TestRequested(t *testing.T) {
 func TestRegisterCallback(t *testing.T) {
 	defer TestingReset()
 	var count struct {
-		last      int64
 		callback1 int64
 		callback2 int64
 		callback3 int64
 	}
 
 	RegisterCallback(func() {
-		count.callback1 = atomic.AddInt64(&count.last, 1)
+		atomic.AddInt64(&count.callback1, 1)
 	})
 	RegisterCallback(func() {
-		count.callback2 = atomic.AddInt64(&count.last, 1)
+		atomic.AddInt64(&count.callback2, 2)
 	})
 	RegisterCallback(func() {
-		count.callback3 = atomic.AddInt64(&count.last, 1)
+		atomic.AddInt64(&count.callback3, 3)
 	})
 	RegisterCallback(nil)
 	RequestShutdown()
