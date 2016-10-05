@@ -32,6 +32,7 @@ var (
 	shutdownFuncs     []func()
 	shutdownRequested bool
 	testingResetC     chan struct{}
+	testingResetWG    sync.WaitGroup
 	shutdownC         <-chan struct{}
 )
 
@@ -104,6 +105,7 @@ func RegisterCallback(f func()) {
 // only be used during testing.
 func TestingReset() {
 	close(testingResetC)
+	testingResetWG.Wait()
 	mutex.Lock()
 	initGlobals()
 	mutex.Unlock()
@@ -132,7 +134,9 @@ func RequestShutdown() {
 		return
 	}
 
+	testingResetWG.Add(1)
 	go func(testingResetC <-chan struct{}) {
+		defer func() { testingResetWG.Done() }()
 		select {
 		case <-time.After(Timeout):
 			Terminate()
@@ -142,7 +146,13 @@ func RequestShutdown() {
 		}
 	}(testingResetC)
 
+	var wg sync.WaitGroup
 	for _, f := range funcs {
-		f()
+		wg.Add(1)
+		go func(f func()) {
+			f()
+			wg.Done()
+		}(f)
 	}
+	wg.Wait()
 }

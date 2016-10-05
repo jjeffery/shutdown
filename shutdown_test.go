@@ -91,12 +91,12 @@ func TestContext(t *testing.T) {
 
 func TestTerminate(t *testing.T) {
 	defer TestingReset()
-	var terminated bool
-	Terminate = func() { terminated = true }
+	var terminated int32
+	Terminate = func() { atomic.AddInt32(&terminated, 1) }
 	Timeout = time.Millisecond * 50
 	RequestShutdown()
 	time.Sleep(Timeout * 2)
-	if got, want := terminated, true; got != want {
+	if got, want := atomic.LoadInt32(&terminated), int32(1); got != want {
 		t.Errorf("want %v, got %v", want, got)
 	}
 }
